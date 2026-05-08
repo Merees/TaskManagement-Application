@@ -1,0 +1,37 @@
+# Node modules
+frontend/node_modules
+frontend/dist
+
+# Python cache
+backend/__pycache__
+backend/*.pyc
+backend/.pytest_cache
+
+# Database
+backend/*.db
+
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation
+*.md
+!README.md
+
+# Old deployment files
+openshift/backend-deployment.yaml
+openshift/frontend-deployment.yaml
+openshift/backend-service.yaml
+openshift/frontend-service.yaml
+
+# Made with Bob
