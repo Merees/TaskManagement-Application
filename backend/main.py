@@ -6,8 +6,55 @@ from pydantic import BaseModel
 from pathlib import Path
 from sqlalchemy.orm import Session
 from database import TaskDB, init_db, get_db
+from opentelemetry import trace, metrics
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+import os
+
+# Setup OpenTelemetry Tracing
+trace_provider = TracerProvider()
+trace_provider.add_span_processor(
+    BatchSpanProcessor(
+        OTLPSpanExporter(
+            endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317"),
+            insecure=True
+        )
+    )
+)
+trace.set_tracer_provider(trace_provider)
+
+# Setup OpenTelemetry Metrics
+metric_reader = PeriodicExportingMetricReader(
+    OTLPMetricExporter(
+        endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317"),
+        insecure=True
+    )
+)
+meter_provider = MeterProvider(metric_readers=[metric_reader])
+metrics.set_meter_provider(meter_provider)
+
+# Create custom metrics
+meter = metrics.get_meter(__name__)
+task_counter = meter.create_counter(
+    "taskflow.tasks.created",
+    description="Number of tasks created"
+)
+task_completed_counter = meter.create_counter(
+    "taskflow.tasks.completed",
+    description="Number of tasks completed"
+)
 
 app = FastAPI()
+
+# Instrument FastAPI and SQLAlchemy
+FastAPIInstrumentor.instrument_app(app)
+SQLAlchemyInstrumentor().instrument()
 
 # Initialize database
 init_db()
@@ -99,6 +146,9 @@ def create_task(task: Task, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(new_task)
     
+    # Track custom metric
+    task_counter.add(1, {"priority": task.priority})
+    
     return {
         "id": new_task.id,
         "title": new_task.title,
@@ -115,6 +165,10 @@ def complete_task(task_id: int, db: Session = Depends(get_db)):
     if task:
         task.completed = True
         db.commit()
+        
+        # Track custom metric
+        task_completed_counter.add(1, {"priority": task.priority})
+        
         return {
             "id": task.id,
             "title": task.title,

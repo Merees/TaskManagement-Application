@@ -20,6 +20,15 @@ spec:
           ports:
             - containerPort: 8080
               name: http
+          env:
+            - name: INSTANA_AGENT_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: INSTANA_AGENT_PORT
+              value: "42699"
+            - name: INSTANA_SERVICE_NAME
+              value: "taskflow"
           resources:
             requests:
               cpu: "100m"
