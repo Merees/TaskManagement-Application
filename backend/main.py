@@ -14,47 +14,60 @@ from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 import os
+import logging
 
-# Setup OpenTelemetry Tracing
-trace_provider = TracerProvider()
-trace_provider.add_span_processor(
-    BatchSpanProcessor(
-        OTLPSpanExporter(
-            endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317"),
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Only setup OTEL if endpoint is configured (not in local dev)
+otel_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+if otel_endpoint:
+    logger.info(f"Configuring OpenTelemetry with endpoint: {otel_endpoint}")
+    
+    # Setup OpenTelemetry Tracing
+    trace_provider = TracerProvider()
+    trace_provider.add_span_processor(
+        BatchSpanProcessor(
+            OTLPSpanExporter(
+                endpoint=otel_endpoint,
+                insecure=True
+            )
+        )
+    )
+    trace.set_tracer_provider(trace_provider)
+
+    # Setup OpenTelemetry Metrics
+    metric_reader = PeriodicExportingMetricReader(
+        OTLPMetricExporter(
+            endpoint=otel_endpoint,
             insecure=True
         )
     )
-)
-trace.set_tracer_provider(trace_provider)
+    meter_provider = MeterProvider(metric_readers=[metric_reader])
+    metrics.set_meter_provider(meter_provider)
 
-# Setup OpenTelemetry Metrics
-metric_reader = PeriodicExportingMetricReader(
-    OTLPMetricExporter(
-        endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317"),
-        insecure=True
+    # Create custom metrics
+    meter = metrics.get_meter(__name__)
+    task_counter = meter.create_counter(
+        "taskflow.tasks.created",
+        description="Number of tasks created"
     )
-)
-meter_provider = MeterProvider(metric_readers=[metric_reader])
-metrics.set_meter_provider(meter_provider)
-
-# Create custom metrics
-meter = metrics.get_meter(__name__)
-task_counter = meter.create_counter(
-    "taskflow.tasks.created",
-    description="Number of tasks created"
-)
-task_completed_counter = meter.create_counter(
-    "taskflow.tasks.completed",
-    description="Number of tasks completed"
-)
+    task_completed_counter = meter.create_counter(
+        "taskflow.tasks.completed",
+        description="Number of tasks completed"
+    )
+else:
+    logger.info("OTEL_EXPORTER_OTLP_ENDPOINT not set - OpenTelemetry disabled for local development")
+    task_counter = None
+    task_completed_counter = None
 
 app = FastAPI()
 
-# Instrument FastAPI and SQLAlchemy
-FastAPIInstrumentor.instrument_app(app)
-SQLAlchemyInstrumentor().instrument()
+# Instrument FastAPI only if OTEL is configured
+if otel_endpoint:
+    FastAPIInstrumentor.instrument_app(app)
 
 # Initialize database
 init_db()
@@ -147,7 +160,8 @@ def create_task(task: Task, db: Session = Depends(get_db)):
     db.refresh(new_task)
     
     # Track custom metric
-    task_counter.add(1, {"priority": task.priority})
+    if task_counter:
+        task_counter.add(1, {"priority": task.priority})
     
     return {
         "id": new_task.id,
@@ -167,7 +181,8 @@ def complete_task(task_id: int, db: Session = Depends(get_db)):
         db.commit()
         
         # Track custom metric
-        task_completed_counter.add(1, {"priority": task.priority})
+        if task_completed_counter:
+            task_completed_counter.add(1, {"priority": task.priority})
         
         return {
             "id": task.id,
